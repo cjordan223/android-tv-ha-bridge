@@ -50,6 +50,8 @@ class BridgeMediaPlayer(BridgeEntity, MediaPlayerEntity):
     _attr_supported_features = FEATURES
     _attr_media_content_type = MediaType.VIDEO
     _attr_media_image_remotely_accessible = False
+    # What's being typed is live state, not history worth keeping.
+    _unrecorded_attributes = frozenset({"text_input"})
 
     def __init__(self, client) -> None:
         super().__init__(client)
@@ -166,6 +168,10 @@ class BridgeMediaPlayer(BridgeEntity, MediaPlayerEntity):
         if np.get("is_ad"):
             attrs["ad_skippable"] = np.get("ad_skippable")
             attrs["ad_skip_in"] = np.get("ad_skip_in")
+        # The TV's keyboard is up: {package, hint, text, password} of the box it's for (text is
+        # never a password's). Absent otherwise. Typing goes through remote.send_command
+        # "text:<text>" / "enter" (PROTOCOL.md).
+        attrs["text_input"] = self._client.state.get("text_input")
         return {k: v for k, v in attrs.items() if v is not None}
 
     @property

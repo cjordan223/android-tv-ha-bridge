@@ -33,8 +33,9 @@ class BridgeRemote(BridgeEntity, RemoteEntity):
         return (self._client.state.get("sensors") or {}).get("screen_on", self._client.available)
 
     async def async_send_command(self, command: Iterable[str], **kwargs: Any) -> None:
-        # Commands are bridge actions (dpad_up, dpad_down, ok, back, home, …). A
-        # "launch:<package>" command opens an app.
+        # Commands are bridge actions (dpad_up, dpad_down, ok, back, home, enter, …). A
+        # "launch:<package>" command opens an app; "text:<text>" and "tap:<x>,<y>" go to the
+        # bridge as written (it reads the value out of the command).
         for cmd in command:
             if cmd.startswith("launch:"):
                 await self._client.async_send("launch", package=cmd.split(":", 1)[1])

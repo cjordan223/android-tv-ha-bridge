@@ -252,7 +252,9 @@ class ScreenCaptureService : Service() {
         private const val NOTIF_ID = 42
         private const val CAPTURE_WIDTH = 640
         private const val SNAPSHOT_LINGER_MS = 5_000L
-        private const val IDLE_STOP_MS = 15_000L
+        // Long enough that a viewer who looks away (another app on the phone, a video Home shows as art)
+        // comes back to a running capture, not a fresh grant: each grant briefly pauses the app on the TV.
+        private const val IDLE_STOP_MS = 120_000L
         private const val FIRST_FRAME_WAIT_MS = 2_000L
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_DATA = "data"

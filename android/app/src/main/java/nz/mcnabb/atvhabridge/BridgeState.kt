@@ -27,6 +27,9 @@ object BridgeState {
     /** Device sensors (battery, storage, network, …), refreshed on the heartbeat. */
     @Volatile var sensors: JSONObject? = null
 
+    /** The text box the TV's keyboard is up for (`text_input`), or null while no keyboard is up. */
+    @Volatile private var textInput: JSONObject? = null
+
     /** The port the server actually bound (may differ from Config.PORT if it was busy). */
     @Volatile var port: Int = Config.PORT
 
@@ -48,6 +51,14 @@ object BridgeState {
         picks: List<UpNextItem> = emptyList(),
     ) {
         snap = s; artUrl = art; upNext = next; upNextArtUrl = nextArt; upNextList = picks
+        val json = currentJson()
+        listeners.forEach { runCatching { it(json) } }
+    }
+
+    /** Set by the accessibility service as the keyboard comes and goes; pushed only when it changes. */
+    fun setTextInput(t: JSONObject?) {
+        if (t?.toString() == textInput?.toString()) return
+        textInput = t
         val json = currentJson()
         listeners.forEach { runCatching { it(json) } }
     }
@@ -109,6 +120,7 @@ object BridgeState {
             })
         }
         sensors?.let { root.put("sensors", it) }
+        textInput?.let { root.put("text_input", it) }
         return root.toString()
     }
 

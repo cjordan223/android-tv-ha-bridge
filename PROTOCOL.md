@@ -19,7 +19,7 @@ name you gave the TV, e.g. `Bedroom TV`):
 | --- | --- |
 | `media_player.<tv>` | State (`playing`/`paused`/`idle`), `media_title`, `media_series_title`, `app_name`, `app_id`, `media_position`, `media_duration`, `media_position_updated_at`, `entity_picture` (poster, proxied over TLS), `volume_level`, `is_volume_muted` — plus the extra attributes below. |
 | `camera.<tv>_screen` | Live screen mirror (MJPEG via `/api/camera_proxy_stream/<entity>`) and still image (`/api/camera_proxy/<entity>`, from the bridge's `/screen.jpg`). Empty until the TV app holds its screen-capture grant (see [`/screen.jpg`](#2-the-raw-local-api)). |
-| `remote.<tv>` | `send_command` with a bridge action (see command list); `turn_on`/`turn_off`; `turn_on` with `activity: <package>` launches an app. |
+| `remote.<tv>` | `send_command` with a bridge action (see command list); `turn_on`/`turn_off`; `turn_on` with `activity: <package>` launches an app. Commands that carry a value put it in the command: `launch:<package>`, `text:<text>`, `tap:<x>,<y>`. |
 | `sensor.<tv>_current_app`, `_up_next`, `_battery`, `_storage_free`, `_memory_free`, `_volume`, `_network`, `_ip`, `_wifi_ssid`, `_wifi_signal`, `_last_boot` | One sensor per device metric. |
 
 **Extra `media_player` attributes** (no standard field exists for these):
@@ -30,6 +30,20 @@ cross-app *Continue watching* row; published while browsing too): a list of
 `/api/media_player_proxy/<entity>/browse_media/up_next/<i>?token=…` URL served exactly like
 `entity_picture` (proxied over the pinned TLS connection). Picks are ordered *next episode*
 tiles first, then most-recently-engaged, and never include what's playing (or paused) right now.
+`text_input` (integration 0.1.21+) is present only while the TV's keyboard is up, or a text box was
+tapped from a phone: `{ package, hint, text, password }` of the box it's for — `text` is never a
+password's. It isn't kept in HA's history.
+
+**Type on the TV:** `remote.send_command` with `text:<text>` makes the box that has input focus
+hold exactly that text (send the whole text each time, e.g. as it's typed); `enter` is the
+keyboard's Return (the box's own Search/Go/Done). `tap:<x>,<y>` (each 0–1, a fraction of the
+screen) clicks what's under that point.
+
+```yaml
+action: remote.send_command
+target: { entity_id: remote.bedroom_tv_remote }
+data: { command: "text:bluey" }
+```
 
 **Play a pick:** `media_player.play_media` with `media_content_type: up_next` and
 `media_content_id: "<i>"` (the pick's index in `up_next_list`) plays it on the TV through the
@@ -125,11 +139,14 @@ adb shell appops set nz.mcnabb.atvhabridge SYSTEM_ALERT_WINDOW allow   # only if
 ```
 
 Capture then only runs while someone watches: a request that finds none asks for a grant (answer
-`503`, try again in a moment; not while the TV is asleep), and 15 s after the last viewer leaves
-(20 s after a `/screen.jpg` pull) the grant is released, so the TV's screen-capture indicator
-shows only while someone is watching. That re-grant briefly puts an invisible activity in front of
-the current app; most players keep playing, but some close themselves (TVNZ+ does), and apps
-with protected video capture as black anyway — so don't ask for the picture while those play.
+`503`, try again in a moment), and about 2 minutes after the last viewer leaves the grant is
+released, so the TV's screen-capture indicator shows while someone is watching (steadily — a
+viewer who looks away briefly comes back to the same grant) and not otherwise. The re-grant
+briefly puts an invisible activity in front of the current app, and a paused player can close
+itself (TVNZ+ did), so it is never taken while something plays or played in the last 15 s
+(a media session playing or buffering, or a video app with sound), nor while the TV is asleep —
+the request is answered `503` until then; and it's started without telling the app underneath
+that the user is leaving. Apps with protected video capture as black anyway.
 One capture display is held for the grant's whole life, but frames
 are only composited while someone watches — a `/screen.mjpeg` client, or a `/screen.jpg` pull
 (which keeps it on ~5 s, for pollers) — so an idle bridge costs nothing extra. The HA
@@ -157,7 +174,17 @@ as read from the TV provider; the API takes an index, never an intent)
 · `open` (`{"url": "…", "package": "…"}` — opens the link in that app only; refused unless the
 package is installed and the scheme is `https`, `http`, `nextpvrtv`, `youtube` or `vnd.youtube`)
 · `global_search` (`{"query": "…"}` — Google TV's universal search on screen; control characters
-stripped, ≤ 100 characters).
+stripped, ≤ 100 characters)
+· `text` (`{"text": "…"}` — the box that has input focus, or the one last tapped, holds exactly this
+text: through the accessibility input method on Android 13+, else the box's own set-text action;
+control characters stripped, ≤ 500 characters, empty clears it) · `enter` (the keyboard's Return:
+the box's own action — Search, Go, Done — else an Enter key)
+· `tap` (`{"x": 0-1, "y": 0-1}`, fractions of the screen — in the focused window, the smallest thing
+under that point that's both selectable and clickable (else just clickable) is selected and OK'd, the
+remote's way, or clicked where the selection can't be moved there; a text box there takes the next
+`text`; with nothing clickable there, a tap gesture — apps that draw their own UI, like YouTube, take
+neither, so use the D-pad there). Over Home Assistant's `remote.send_command`, which passes one
+string per command, these are `text:<text>` and `tap:<x>,<y>`.
 
 ### The state document
 
@@ -189,7 +216,10 @@ stripped, ≤ 100 characters).
                 "uptime": "…", "screen_on": true, "battery_level": 100, "battery_state": "…",
                 "storage_free_gb": 12.3, "memory_free_mb": 512, "volume_level": 40,
                 "volume_muted": false, "ip": "…", "network_type": "…",
-                "wifi_ssid": "…", "wifi_rssi": -55 }
+                "wifi_ssid": "…", "wifi_rssi": -55 },
+  "text_input": {                   // only while the TV's keyboard is up (or a box was tapped)
+    "package": "org.jellyfin.androidtv", "hint": "Search", "text": "mayd", "password": false
+  }
 }
 ```
 

@@ -283,6 +283,7 @@ class MediaListenerService : NotificationListenerService() {
                 if (controller != null) {
                     artResolver.update(controller.metadata)
                     val snap = buildSnapshot(controller)
+                    if (snap.state == "playing") ScreenGrantActivity.notePlaying()
                     artResolver.updatePoster(snap.posterUrl)
                     val artUrl = if (artResolver.bitmap() != null) "/art.jpg?v=${artResolver.version}" else null
                     probe(controller)

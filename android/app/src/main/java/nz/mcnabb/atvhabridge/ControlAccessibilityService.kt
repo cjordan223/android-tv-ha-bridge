@@ -1,14 +1,26 @@
 package nz.mcnabb.atvhabridge
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.accessibilityservice.InputMethod
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.text.InputType
+import android.util.DisplayMetrics
 import android.util.Log
+import android.view.KeyEvent
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import android.view.inputmethod.EditorInfo
+import org.json.JSONObject
+import kotlin.math.roundToInt
 
 /**
  * D-pad / OK / Back / Home navigation without ADB, AND a generic now-playing scraper.
@@ -23,12 +35,19 @@ import android.view.accessibility.AccessibilityNodeInfo
  * tree for as long as the player is up (Jellyfin only fades its overlay to alpha 0, it never
  * removes it) and is gone the moment the app's menus replace it — which is what tells paused
  * from browsing, the one thing audio alone cannot.
+ *
+ * And the phone's keyboard and touch: while the TV's keyboard is up (an input-method window is
+ * showing — Google TV's own, or its "use the keyboard on your mobile device" panel) it publishes the
+ * text box ([BridgeState.setTextInput]); [setText] and [enter] type into whatever has input focus,
+ * through the accessibility input method (Android 13+, works where the box isn't an accessible
+ * node) or the focused node itself; [tap] clicks what's under a point of the screen.
  */
 class ControlAccessibilityService : AccessibilityService() {
 
     private var lastScrapeMs = 0L
     private val handler = Handler(Looper.getMainLooper())
     private val trailingScrape = Runnable { scrapeNow() }
+    private val textCheck = Runnable { checkTextInput() }
 
     override fun onServiceConnected() {
         Controls.accessibility = this
@@ -36,12 +55,21 @@ class ControlAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         handler.removeCallbacks(trailingScrape)
+        handler.removeCallbacks(textCheck)
         if (Controls.accessibility === this) Controls.accessibility = null
+        BridgeState.setTextInput(null)
         super.onDestroy()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val pkg = event?.packageName?.toString() ?: return
+        event ?: return
+        // The keyboard comes and goes with windows; the box's contents change with focus and typing.
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) tappedAt = null
+        handler.removeCallbacks(textCheck)
+        handler.postDelayed(textCheck, TEXT_CHECK_MS)
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) return
+        val pkg = event.packageName?.toString() ?: return
         if (pkg != Controls.currentMediaPackage) return
         // At most one read per SCRAPE_THROTTLE_MS — but a burst always gets one more read
         // once it settles: backing out of the player is a burst whose first event can land
@@ -151,6 +179,172 @@ class ControlAccessibilityService : AccessibilityService() {
         return if (c != null) a * 3600 + b * 60 + c else a * 60 + b
     }
 
+    // ---- the phone's keyboard ---------------------------------------------------------------
+
+    /** Android 13+: an input method of our own beside the TV's, so text reaches any box that takes
+     * input — including apps that draw their own UI and expose no accessible text field. */
+    override fun onCreateInputMethod(): InputMethod = object : InputMethod(this) {
+        override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+            super.onStartInput(attribute, restarting)
+            handler.post(textCheck)
+        }
+
+        override fun onFinishInput() {
+            super.onFinishInput()
+            handler.post(textCheck)
+        }
+    }
+
+    private fun connection(): InputMethod.AccessibilityInputConnection? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) inputMethod?.currentInputConnection else null
+
+    private fun editorInfo(): EditorInfo? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) inputMethod?.currentInputEditorInfo else null
+
+    /** Where the phone last tapped a text box: typing goes to the box there when nothing has input
+     * focus. Looked up afresh each time (apps rebuild their nodes); dropped when the screen changes. */
+    @Volatile private var tappedAt: Pair<Int, Int>? = null
+
+    private fun tappedField(): AccessibilityNodeInfo? = tappedAt?.let { (x, y) ->
+        rootInActiveWindow?.let { clickableAt(it, x, y) }?.takeIf { it.isEditable }
+    }
+
+    private fun focusedField(): AccessibilityNodeInfo? =
+        runCatching { findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()?.takeIf { it.isEditable }
+            ?: tappedField()
+
+    /** The text box the TV's keyboard is up for, or null when no keyboard is showing. A password's
+     * contents are never read. */
+    private fun checkTextInput() {
+        val keyboardUp = runCatching { windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } }
+            .getOrDefault(false)
+        if (!keyboardUp && tappedField() == null) { BridgeState.setTextInput(null); return }
+        val node = focusedField()
+        val info = editorInfo()
+        val variation = (info?.inputType ?: 0) and InputType.TYPE_MASK_VARIATION
+        val password = node?.isPassword == true || variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+            variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD || variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        val hint = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) node?.hintText else null) ?: info?.hintText
+        val text = when {
+            password -> null
+            node != null -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && node.isShowingHintText) "" else node.text?.toString()
+            else -> connection()?.getSurroundingText(MAX_FIELD, MAX_FIELD, 0)?.text?.toString()
+        }
+        BridgeState.setTextInput(JSONObject().apply {
+            put("package", node?.packageName?.toString() ?: info?.packageName ?: JSONObject.NULL)
+            put("hint", hint?.toString()?.take(MAX_HINT) ?: JSONObject.NULL)
+            put("text", text?.take(MAX_FIELD) ?: JSONObject.NULL)
+            put("password", password)
+        })
+    }
+
+    /** Make the box hold exactly [text], cursor at the end. */
+    fun setText(text: String): Boolean {
+        connection()?.let { ic ->
+            ic.deleteSurroundingText(MAX_FIELD, MAX_FIELD)
+            ic.commitText(text, 1, null)
+            Log.i(TAG, "text: ${text.length} chars via the input connection")
+            handler.post(textCheck)
+            return true
+        }
+        val node = focusedField() ?: return false.also { Log.i(TAG, "text: no box has input focus") }
+        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
+        val done = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (done) node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, text.length)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, text.length)
+        })
+        Log.i(TAG, "text: ${text.length} chars via the focused node (${if (done) "ok" else "refused"})")
+        handler.post(textCheck)
+        return done
+    }
+
+    /** The keyboard's Return: the box's own action (Search, Go, Done…), else an Enter key. */
+    fun enter(): Boolean {
+        connection()?.let { ic ->
+            val action = (editorInfo()?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+            if (action != EditorInfo.IME_ACTION_NONE && action != EditorInfo.IME_ACTION_UNSPECIFIED) {
+                ic.performEditorAction(action)
+            } else {
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                ic.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            }
+            Log.i(TAG, "enter: editor action $action via the input connection")
+            tappedAt = null
+            return true
+        }
+        val node = focusedField() ?: return false
+        tappedAt = null   // typing's done: the keyboard's job ends with its Return
+        handler.post(textCheck)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        return node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+            .also { Log.i(TAG, "enter: the box's own action via the node (${if (it) "ok" else "refused"})") }
+    }
+
+    // ---- touch ----------------------------------------------------------------------------------
+
+    /** Activate what's at ([fx], [fy]) — fractions of the screen. TV apps act on selection and OK, not
+     * touch, so what's under the point in the window that has focus ([clickableAt]) is selected and
+     * OK'd, or clicked; a text box takes the phone's typing; with nothing clickable there (an app that
+     * draws its own UI) it's a tap gesture. */
+    fun tap(fx: Double, fy: Double): Boolean {
+        val metrics = DisplayMetrics()
+        @Suppress("DEPRECATION")
+        getSystemService(WindowManager::class.java)?.defaultDisplay?.getRealMetrics(metrics)
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) return false
+        val x = (fx * metrics.widthPixels).roundToInt().coerceIn(0, metrics.widthPixels - 1)
+        val y = (fy * metrics.heightPixels).roundToInt().coerceIn(0, metrics.heightPixels - 1)
+        val target = rootInActiveWindow?.let { clickableAt(it, x, y) }
+        if (target != null && target.isEditable) {
+            // A text box: the phone's keyboard types straight into it (a click doesn't open the TV's
+            // keyboard in every app, and focusing it isn't always allowed).
+            tappedAt = x to y
+            target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            handler.post(textCheck)
+            Log.i(TAG, "tap ($x,$y): a text box — the phone's keyboard types into it")
+            return true
+        }
+        if (target != null) {
+            // The remote's way first — move the selection there, press OK — which every TV app answers (TVNZ+ ignores a
+            // click); a click where the selection can't be moved there (some Compose screens).
+            if (target.isFocusable && !target.isFocused) target.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            if (target.refresh() && target.isFocused && doGlobal("dpad_center")) {
+                Log.i(TAG, "tap ($x,$y): selected ${target.className}, OK")
+                return true
+            }
+            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                Log.i(TAG, "tap ($x,$y): clicked ${target.className}")
+                return true
+            }
+        }
+        Log.i(TAG, "tap ($x,$y): nothing clickable there — tap gesture")
+        val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        return dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, TAP_MS)).build(), null, null,
+        )
+    }
+
+    /** What a finger at (x, y) means: of everything on screen under it, a text box, else the smallest
+     * thing that's both selectable and clickable — the card a remote would select (apps nest clickable
+     * parts inside cards, and lay full-screen scrims over them) — else the smallest clickable thing. */
+    private fun clickableAt(root: AccessibilityNodeInfo, x: Int, y: Int): AccessibilityNodeInfo? {
+        val bounds = Rect()
+        val under = ArrayList<AccessibilityNodeInfo>()
+        val stack = ArrayDeque<AccessibilityNodeInfo>().apply { addLast(root) }
+        while (stack.isNotEmpty()) {
+            val n = stack.removeLast()
+            n.getBoundsInScreen(bounds)
+            if (!n.isVisibleToUser || !bounds.contains(x, y)) continue
+            under.add(n)
+            for (i in 0 until n.childCount) n.getChild(i)?.let { stack.addLast(it) }
+        }
+        fun area(n: AccessibilityNodeInfo): Long { n.getBoundsInScreen(bounds); return bounds.width().toLong() * bounds.height() }
+        return under.filter { it.isEditable }.minByOrNull(::area)
+            ?: under.filter { it.isClickable && it.isFocusable }.minByOrNull(::area)
+            ?: under.filter { it.isClickable }.minByOrNull(::area)
+    }
+
     fun doGlobal(action: String): Boolean {
         val dpad = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         val id = when (action) {
@@ -170,6 +364,10 @@ class ControlAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "PlayerScrape"
         private const val SCRAPE_THROTTLE_MS = 900L
+        private const val TEXT_CHECK_MS = 150L
+        private const val TAP_MS = 60L
+        private const val MAX_FIELD = 500
+        private const val MAX_HINT = 120
         private val TIME = Regex("""(\d{1,2}):(\d{2})(?::(\d{2}))?""")
         private val SEASON_EP = Regex("""(?i)S(\d{1,3}):?\s*E(\d{1,3})""")
     }

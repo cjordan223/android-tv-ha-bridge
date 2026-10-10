@@ -13,7 +13,7 @@
     <string name="grant_screen">4. Enable screen streaming (optional)</string>
     <string name="grant_screen_done">4. Screen streaming ✓</string>
     <string name="onboarding_hint">Grant the permissions above, then this screen shows a pairing code for Home Assistant.</string>
-    <string name="a11y_description">Lets Home Assistant press D-pad, OK, Back and Home on this TV. Reads nothing from the screen.</string>
+    <string name="a11y_description">Lets Home Assistant press D-pad, OK, Back and Home on this TV, click what\'s on screen, and type into the text box the TV\'s keyboard is open for. Reads the player\'s on-screen controls to tell what\'s playing, and the open text box (never a password) so a phone can show what\'s typed.</string>
     <string name="screen_notif_channel">Screen streaming</string>
     <string name="screen_notif_title">Screen available to Home Assistant</string>
 

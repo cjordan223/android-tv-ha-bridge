@@ -56,7 +56,26 @@ object Controls {
         "play_next" -> playNext(params.optInt("index", -1))
         "open" -> open(params.optString("url"), params.optString("package"))
         "global_search" -> globalSearch(params.optString("query"))
-        else -> false
+        "tap" -> tap(params.optDouble("x", Double.NaN), params.optDouble("y", Double.NaN))
+        "text" -> type(params.optString("text"))
+        "enter" -> accessibility?.enter() ?: false
+        else -> withValue(action)
+    }
+
+    /** Home Assistant's remote.send_command passes each command as one string, so "tap:<x>,<y>"
+     * and "text:<text>" carry their value in it. */
+    private fun withValue(command: String): Boolean {
+        tapPoint(command)?.let { (x, y) -> return tap(x, y) }
+        if (command.startsWith(TEXT_PREFIX)) return type(command.removePrefix(TEXT_PREFIX))
+        return false
+    }
+
+    private fun tap(x: Double, y: Double): Boolean =
+        x in 0.0..1.0 && y in 0.0..1.0 && accessibility?.tap(x, y) == true
+
+    private fun type(raw: String): Boolean {
+        val text = typedText(raw) ?: return false
+        return accessibility?.setText(text) ?: false
     }
 
     private fun audio(): AudioManager? = appContext?.getSystemService(AudioManager::class.java)
@@ -187,3 +206,19 @@ fun openAllowed(url: String, pkg: String): Boolean =
  * nothing or more than [MAX_SEARCH_CHARS]. */
 fun searchQuery(raw: String): String? =
     raw.filterNot { it.isISOControl() }.trim().takeIf { it.isNotEmpty() && it.length <= MAX_SEARCH_CHARS }
+
+private const val TEXT_PREFIX = "text:"
+private const val MAX_TEXT_CHARS = 500
+private val TAP = Regex("""tap:([0-9]*\.?[0-9]+),([0-9]*\.?[0-9]+)""")
+
+/** What `text` puts in the box: control characters out (a box is one line), or null past
+ * [MAX_TEXT_CHARS]. Empty is allowed — it clears the box. */
+fun typedText(raw: String): String? = raw.filterNot { it.isISOControl() }.takeIf { it.length <= MAX_TEXT_CHARS }
+
+/** "tap:<x>,<y>", each a fraction of the screen from 0 to 1, as the point; anything else null. */
+fun tapPoint(command: String): Pair<Double, Double>? {
+    val m = TAP.matchEntire(command) ?: return null
+    val x = m.groupValues[1].toDoubleOrNull() ?: return null
+    val y = m.groupValues[2].toDoubleOrNull() ?: return null
+    return if (x in 0.0..1.0 && y in 0.0..1.0) x to y else null
+}

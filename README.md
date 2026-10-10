@@ -8,7 +8,7 @@
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-FF5252?labelColor=0B0F14)](LICENSE)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-4CC2FF?labelColor=0B0F14)](https://github.com/hacs/integration)
-[![Version 0.1.20](https://img.shields.io/badge/version-0.1.20-4CC2FF?labelColor=0B0F14)](https://github.com/CyborgFingers/android-tv-ha-bridge/releases)
+[![Version 0.1.21](https://img.shields.io/badge/version-0.1.21-4CC2FF?labelColor=0B0F14)](https://github.com/CyborgFingers/android-tv-ha-bridge/releases)
 [![Made for Home Assistant](https://img.shields.io/badge/Made_for-Home_Assistant-41BDF5?labelColor=0B0F14&logo=homeassistant&logoColor=white)](https://www.home-assistant.io/)
 
 [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=CyborgFingers&repository=android-tv-ha-bridge&category=integration)
