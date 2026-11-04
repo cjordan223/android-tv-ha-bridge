@@ -24,12 +24,18 @@ async def _async_register_card(hass: HomeAssistant) -> None:
     user never has to add a Lovelace resource by hand."""
     if hass.data.get(f"{DOMAIN}_card"):
         return
-    path = Path(__file__).parent / CARD_FILENAME
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL, str(path), cache_headers=False)]
-    )
-    add_extra_js_url(hass, f"{CARD_URL}?v={CARD_VERSION}")
+    # Claim it before awaiting: with two TV boxes both entries set up at once, and registering the same route twice
+    # is an error (HA 2026.10+).
     hass.data[f"{DOMAIN}_card"] = True
+    path = Path(__file__).parent / CARD_FILENAME
+    try:
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(CARD_URL, str(path), cache_headers=False)]
+        )
+    except Exception:
+        hass.data.pop(f"{DOMAIN}_card", None)
+        raise
+    add_extra_js_url(hass, f"{CARD_URL}?v={CARD_VERSION}")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: BridgeConfigEntry) -> bool:

@@ -9,6 +9,6 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/CyborgFingers/android-tv-ha-bridge/issues",
   "requirements": [],
-  "version": "0.1.21",
+  "version": "0.1.22",
   "zeroconf": ["_atvhabridge._tcp.local."]
 }
