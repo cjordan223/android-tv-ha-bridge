@@ -107,7 +107,11 @@ class BridgeClient:
     def art_url(self, rel: str | None) -> str | None:
         if not rel:
             return None
-        return rel if rel.startswith("http") else f"{self.base_url}{rel}"
+        if rel.startswith("/"):
+            return f"{self.base_url}{rel}"
+        # Only follow absolute URLs that point back at this bridge, so a bad state
+        # payload can't make Home Assistant fetch arbitrary hosts.
+        return rel if rel.startswith(f"{self.base_url}/") else None
 
     async def async_fetch_image(self, url: str) -> tuple[bytes | None, str | None]:
         """Fetch poster bytes over the pinned TLS connection (HA can't validate the
