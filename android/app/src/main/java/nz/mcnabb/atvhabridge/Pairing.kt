@@ -15,6 +15,8 @@ import java.util.UUID
 class Pairing(context: Context) {
     private val prefs = context.getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE)
     private val rng = SecureRandom()
+    private var failedAttempts = 0
+    private var lockedUntil = 0L
 
     val deviceId: String = prefs.getString(KEY_ID, null) ?: UUID.randomUUID().toString().also {
         prefs.edit().putString(KEY_ID, it).apply()
@@ -35,9 +37,21 @@ class Pairing(context: Context) {
     }
 
     /** Validate a code; on success mint + persist a token and invalidate the code. */
+    @Synchronized
     fun redeem(candidate: String): String? {
+        if (now() < lockedUntil) return null
         val stored = prefs.getString(KEY_CODE, null) ?: return null
-        if (now() > prefs.getLong(KEY_CODE_EXP, 0) || candidate.trim() != stored) return null
+        if (now() > prefs.getLong(KEY_CODE_EXP, 0) || candidate.trim() != stored) {
+            // Throttle guessing: after MAX_FAILED_ATTEMPTS wrong codes, lock out briefly and
+            // show a fresh code, so the 6-digit space can't be swept within one code's lifetime.
+            if (++failedAttempts >= MAX_FAILED_ATTEMPTS) {
+                failedAttempts = 0
+                lockedUntil = now() + LOCKOUT_MS
+                rotateCode()
+            }
+            return null
+        }
+        failedAttempts = 0
         val token = randomToken()
         prefs.edit().putStringSet(KEY_TOKENS, tokens() + token).apply()
         rotateCode() // one-time use
@@ -66,5 +80,7 @@ class Pairing(context: Context) {
         private const val KEY_CODE = "pair_code"
         private const val KEY_CODE_EXP = "pair_code_exp"
         private const val CODE_TTL_MS = 30 * 60 * 1000L
+        private const val MAX_FAILED_ATTEMPTS = 5
+        private const val LOCKOUT_MS = 60 * 1000L
     }
 }
